@@ -42,14 +42,14 @@ USERS = {
 CLIENTS = {
     "hospital-web": {
         "client_id": "hospital-web",
+        "client_secret": os.environ.get("HOSPITAL_CLIENT_SECRET", "cambia-este-secreto-en-produccion"),
         "redirect_uris": [
-            "http://localhost:8001/callback",
-            "http://127.0.0.1:8001/callback"
+            "http://localhost:8001/callback"
         ],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "scope": "paciente:leer medico:escribir",
-        "token_endpoint_auth_method": "none"
+        "token_endpoint_auth_method": "client_secret_post"
     }
 }
 
@@ -70,6 +70,9 @@ class ClientObj:
         client_scopes = set(self.scope.split())
         requested_scopes = scope.split()
         return " ".join([s for s in requested_scopes if s in client_scopes])
+    
+    def check_client_secret(self, client_secret):
+        return client_secret == self.client_secret
 
 class AuthCodeObj:
     def __init__(self, **kwargs): self.__dict__.update(kwargs)
@@ -82,7 +85,7 @@ class TokenObj:
     def get_scope(self): return self.scope
 
 class AuthorizationCodeGrant(grants.AuthorizationCodeGrant):
-    TOKEN_ENDPOINT_AUTH_METHODS = ["none"]
+    TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post"]
 
     def save_authorization_code(self, code, request):
         requested = (request.scope or "").split()
@@ -112,6 +115,7 @@ class AuthorizationCodeGrant(grants.AuthorizationCodeGrant):
         return next((u for u in USERS.values() if u["id"] == authorization_code.user_id), None)
 
 class RefreshTokenGrant(grants.RefreshTokenGrant):
+    TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post"]
     INCLUDE_NEW_REFRESH_TOKEN = False
 
     def authenticate_refresh_token(self, refresh_token):
@@ -150,7 +154,7 @@ server = AuthorizationServer(
     query_client=lambda cid: ClientObj(CLIENTS[cid]) if cid in CLIENTS else None,
     save_token=save_token
 )
-server.register_grant(AuthorizationCodeGrant, [CodeChallenge(required=False)])
+server.register_grant(AuthorizationCodeGrant, [CodeChallenge(required=False)]) #Cambiado de false a True
 server.register_grant(RefreshTokenGrant)
 
 @app.route("/setup-mfa")

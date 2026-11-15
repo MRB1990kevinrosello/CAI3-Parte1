@@ -18,11 +18,13 @@ oauth = OAuth(app)
 oauth.register(
     name="hospital_insegus",
     client_id="hospital-web",
+    client_secret=os.environ.get("HOSPITAL_CLIENT_SECRET", "cambia-este-secreto-en-produccion"),
     authorize_url="http://localhost:8000/oauth/authorize",
     access_token_url="http://localhost:8000/oauth/token",
     client_kwargs={
         "scope": "paciente:leer medico:escribir",
-        "token_endpoint_auth_method": "none"
+        "token_endpoint_auth_method": "client_secret_post",
+        "code_challenge_method": "S256"
     }
 )
 
@@ -110,7 +112,7 @@ def get_historial():
     })
 
 @app.route("/api/historial", methods=["POST"])
-@require_oauth()
+@require_oauth("medico:escribir")
 def post_historial():
     datos = request.get_json(silent=True) or {}
     diagnostico = datos.get("diagnostico", "")
