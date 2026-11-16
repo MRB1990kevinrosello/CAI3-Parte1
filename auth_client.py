@@ -23,6 +23,7 @@ CLIENT_SECRET = os.environ["CLIENT_SECRET"]   # cliente confidencial: secreto en
 
 app = Flask(__name__)
 app.secret_key = os.environ["PORTAL_SECRET_KEY"]
+app.config["SESSION_COOKIE_NAME"] = "portal_session"
 
 oauth = OAuth(app)
 oauth.register(
@@ -191,6 +192,15 @@ def post_historial():
         "status": "ok",
         "mensaje": f"Historial médico actualizado con: {diagnostico}",
     })
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Server"] = "Hospital-Portal"
+    return response
 
 if __name__ == "__main__":
     app.run(port=8001, debug=False)
