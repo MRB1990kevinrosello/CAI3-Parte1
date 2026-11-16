@@ -2,23 +2,40 @@ import os
 os.environ["AUTHLIB_INSECURE_TRANSPORT"] = "1"
 import time
 import base64
+import hmac
 import secrets
 from io import BytesIO
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template
 from authlib.integrations.flask_oauth2 import AuthorizationServer
 from authlib.oauth2.rfc6749 import grants
 from authlib.oauth2.rfc7636 import CodeChallenge
-from authlib.jose import jwt
+from authlib.jose import jwt, JsonWebKey
 from passlib.context import CryptContext
 import pyotp
 import qrcode
 
-app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+load_dotenv()
 
-app.config["OAUTH2_JWT_KEY"] = secrets.token_hex(32)
-app.config["OAUTH2_JWT_ALG"] = "HS256"
-app.config["OAUTH2_ACCESS_TOKEN_EXPIRES_IN"] = 3600
+ISSUER = os.environ.get("OAUTH_ISSUER", "http://localhost:8000")
+AUDIENCE = os.environ.get("OAUTH_AUDIENCE", "hospital-api")
+ACCESS_TOKEN_TTL = int(os.environ.get("ACCESS_TOKEN_TTL", "300"))  # access token: 5 minutos
+REFRESH_TOKEN_TTL = 8 * 3600  # refresh token: 8 horas como máximo, aunque se renueve
+
+app = Flask(__name__)
+app.secret_key = os.environ["AUTH_SERVER_SECRET_KEY"]
+
+with open(os.environ["JWT_PRIVATE_KEY_PATH"], "rb") as f:
+    PRIVATE_KEY = JsonWebKey.import_key(f.read(), {"kty": "RSA"})
+KID = PRIVATE_KEY.thumbprint()
+
+PUBLIC_JWKS = {"keys": [{**PRIVATE_KEY.as_dict(is_private=False), "kid": KID, "alg": "RS256", "use": "sig"}]}
+
+app.config["OAUTH2_TOKEN_EXPIRES_IN"] = {
+    "authorization_code": ACCESS_TOKEN_TTL,
+    "refresh_token": ACCESS_TOKEN_TTL,
+}
+app.config["OAUTH2_REFRESH_TOKEN_GENERATOR"] = True
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
@@ -42,19 +59,24 @@ USERS = {
 CLIENTS = {
     "hospital-web": {
         "client_id": "hospital-web",
+        "client_secret": os.environ["CLIENT_SECRET"],   # cliente confidencial: secreto en .env
         "redirect_uris": [
-            "http://localhost:8001/callback",
-            "http://127.0.0.1:8001/callback"
+            "http://localhost:8001/callback"
         ],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "scope": "paciente:leer medico:escribir",
-        "token_endpoint_auth_method": "none"
+        "token_endpoint_auth_method": "client_secret_post"
     }
 }
 
 AUTH_CODES = {}
-TOKENS = {}
+REFRESH_TOKENS = {}
+
+def revocar_familia(family_id):
+    # Borra toda la cadena de refresh tokens de un mismo inicio de sesión
+    for clave in [k for k, t in REFRESH_TOKENS.items() if t.family_id == family_id]:
+        REFRESH_TOKENS.pop(clave, None)
 
 class ClientObj:
     def __init__(self, data): self.__dict__.update(data)
@@ -70,6 +92,8 @@ class ClientObj:
         client_scopes = set(self.scope.split())
         requested_scopes = scope.split()
         return " ".join([s for s in requested_scopes if s in client_scopes])
+    def check_client_secret(self, client_secret):
+        return hmac.compare_digest(client_secret or "", self.client_secret)
 
 class AuthCodeObj:
     def __init__(self, **kwargs): self.__dict__.update(kwargs)
@@ -80,9 +104,10 @@ class AuthCodeObj:
 class TokenObj:
     def __init__(self, **kwargs): self.__dict__.update(kwargs)
     def get_scope(self): return self.scope
+    def check_client(self, client): return self.client_id == client.client_id
 
 class AuthorizationCodeGrant(grants.AuthorizationCodeGrant):
-    TOKEN_ENDPOINT_AUTH_METHODS = ["none"]
+    TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post"]
 
     def save_authorization_code(self, code, request):
         requested = (request.scope or "").split()
@@ -112,37 +137,61 @@ class AuthorizationCodeGrant(grants.AuthorizationCodeGrant):
         return next((u for u in USERS.values() if u["id"] == authorization_code.user_id), None)
 
 class RefreshTokenGrant(grants.RefreshTokenGrant):
-    INCLUDE_NEW_REFRESH_TOKEN = False
+    TOKEN_ENDPOINT_AUTH_METHODS = ["client_secret_post"]
+    INCLUDE_NEW_REFRESH_TOKEN = True   # rotación
 
     def authenticate_refresh_token(self, refresh_token):
-        return TOKENS.get(refresh_token)
+        item = REFRESH_TOKENS.get(refresh_token)
+        if not item:
+            return None
+        if item.used:
+            # Un refresh token ya canjeado vuelve a aparecer, lo tiene alguien más
+            # Se invalida toda la cadena y hay que volver a iniciar sesión
+            app.logger.warning("Reutilización de refresh token (usuario %s): cadena revocada", item.user_id)
+            revocar_familia(item.family_id)
+            return None
+        if time.time() > item.expires_at:   # caducidad
+            revocar_familia(item.family_id)
+            return None
+        return item
 
     def authenticate_user(self, credential):
         return next((u for u in USERS.values() if u["id"] == credential.user_id), None)
 
     def revoke_old_credential(self, credential):
-        pass
+        # El refresh token usado queda marcado. si reaparece es un robo
+        credential.used = True
 
 def generate_jwt_access_token(client, grant_type, user, scope):
     now = int(time.time())
-    header = {"alg": app.config["OAUTH2_JWT_ALG"]}
+    header = {"alg": "RS256", "kid": KID}
     payload = {
-        "iss": "http://localhost:8000",
+        "iss": ISSUER,
         "sub": user["username"],
-        "aud": client.client_id,
+        "aud": AUDIENCE,
         "scope": scope,
         "iat": now,
-        "exp": now + app.config["OAUTH2_ACCESS_TOKEN_EXPIRES_IN"]
+        "exp": now + ACCESS_TOKEN_TTL
     }
-    return jwt.encode(header, payload, app.config["OAUTH2_JWT_KEY"]).decode()
+    return jwt.encode(header, payload, PRIVATE_KEY).decode()
 
 def save_token(token_data, request):
-    if "refresh_token" in token_data:
-        TOKENS[token_data["refresh_token"]] = TokenObj(
-            user_id=request.user["id"],
-            client_id=request.client.client_id,
-            scope=token_data.get("scope", "")
-        )
+    if "refresh_token" not in token_data:
+        return
+    anterior = getattr(request, "refresh_token", None)
+    if anterior is not None:
+        family_id, expires_at = anterior.family_id, anterior.expires_at
+    else:
+        family_id, expires_at = secrets.token_hex(16), time.time() + REFRESH_TOKEN_TTL
+    REFRESH_TOKENS[token_data["refresh_token"]] = TokenObj(
+        token=token_data["refresh_token"],
+        user_id=request.user["id"],
+        client_id=request.client.client_id,
+        scope=token_data.get("scope", ""),
+        family_id=family_id,
+        expires_at=expires_at,
+        used=False
+    )
 
 app.config["OAUTH2_ACCESS_TOKEN_GENERATOR"] = generate_jwt_access_token
 server = AuthorizationServer(
@@ -150,7 +199,7 @@ server = AuthorizationServer(
     query_client=lambda cid: ClientObj(CLIENTS[cid]) if cid in CLIENTS else None,
     save_token=save_token
 )
-server.register_grant(AuthorizationCodeGrant, [CodeChallenge(required=False)])
+server.register_grant(AuthorizationCodeGrant, [CodeChallenge(required=True)])   # PKCE obligatorio
 server.register_grant(RefreshTokenGrant)
 
 @app.route("/setup-mfa")
@@ -168,6 +217,9 @@ def setup_mfa():
 
 @app.route("/oauth/authorize", methods=["GET", "POST"])
 def authorize():
+    if not request.values.get("code_challenge") or request.values.get("code_challenge_method") != "S256":
+        return jsonify({"error": "invalid_request", "error_description": "PKCE (code_challenge con S256) es obligatorio"}), 400
+
     if request.method == "GET":
         return render_template("login.html")
 
@@ -192,9 +244,19 @@ def authorize():
 def issue_token():
     return server.create_token_response()
 
-@app.route("/.well-known/jwt-key")
-def jwt_key():
-    return jsonify({"key": app.config["OAUTH2_JWT_KEY"], "alg": app.config["OAUTH2_JWT_ALG"]})
+@app.route("/oauth/revoke", methods=["POST"])
+def revoke_token():
+    client = server.query_client(request.form.get("client_id", ""))
+    if not client or not client.check_client_secret(request.form.get("client_secret", "")):
+        return jsonify({"error": "invalid_client"}), 401
+    item = REFRESH_TOKENS.get(request.form.get("token", ""))
+    if item and item.client_id == client.client_id:
+        revocar_familia(item.family_id)
+    return "", 200
+
+@app.route("/.well-known/jwks.json")
+def jwks():
+    return jsonify(PUBLIC_JWKS)
 
 if __name__ == "__main__":
     app.run(port=8000, debug=True)

@@ -6,6 +6,11 @@ CAI3-Parte1/
 ├── requirements.txt
 ├── auth_server.py
 ├── auth_client.py
+├── generar_claves.py
+├── .env.example
+├── redteam/
+│   ├── forjar_jwt.py
+│   └── probar_hardening.py
 └── templates/
     ├── setup_mfa.html
     ├── login.html
@@ -22,6 +27,15 @@ b) En Linux (Bash)
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+Paso 1.b: Generar claves y secretos (solo la primera vez)
+
+python generar_claves.py
+
+Crea keys/jwt_private.pem (clave privada RSA con la que se firman los JWT) y el fichero .env
+con secretos aleatorios. Sin este paso los servidores no arrancan. Ni keys/ ni .env se suben
+a git ni se incluyen en el zip: cada instalación genera los suyos. En .env.example está la
+lista de variables con su explicación.
 
 Paso 2: Arrancar los dos servidores (Necesitas 2 terminales)
 

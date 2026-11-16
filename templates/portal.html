@@ -5,7 +5,7 @@
     <title>Portal Médico</title>
 </head>
 <body>
-    <h2>Portal Médico <span id="usuario"></span></h2>
+    <h2>Portal Médico {% if usuario %}({{ usuario }}){% endif %}</h2>
     <p>1. Vincular FreeOTP: <a id="link-mfa" href="http://localhost:8000/setup-mfa" target="_blank">Configurar FreeOTP</a></p>
     <p>2. Autenticarse: <a href="/login"><strong>Iniciar sesión con OAuth 2.0 + FreeOTP</strong></a> | <a href="/logout">Cerrar sesión</a></p>
     <hr>
@@ -27,13 +27,6 @@
         const host = window.location.hostname;
         document.getElementById('link-mfa').href = `http://${host}:8000/setup-mfa`;
 
-        const match = document.cookie.match(/(?:^|;\s*)access_token=([^;]*)/);
-        if (match) {
-            try {
-                const payload = JSON.parse(atob(match[1].split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-                if (payload.sub) document.getElementById('usuario').textContent = `(${payload.sub})`;
-            } catch (e) {}
-        }
 
         async function probarAPI(url, metodo) {
             const res = await fetch(url, { method: metodo });
