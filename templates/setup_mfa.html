@@ -5,24 +5,26 @@
     <title>Configurar FreeOTP - {{ username }}</title>
 </head>
 <body>
-    <h2>1. Vincula tu dispositivo con FreeOTP</h2>
-    
-    <p>
-        Seleccionar cuenta: 
-        <a href="/setup-mfa?user=rocio"><button type="button">Rocio (Paciente)</button></a>
-        <a href="/setup-mfa?user=dr_gasca"><button type="button">Dr. Gasca (Médico)</button></a>
-    </p>
+    <h2>2. Vincula tu dispositivo con FreeOTP</h2>
 
     <p>Configurando autenticación para el usuario: <strong>{{ username }}</strong></p>
     <p>Escanea este código QR con la aplicación <strong>FreeOTP</strong> en tu móvil:</p>
     
     <img src="data:image/png;base64,{{ qr_b64 }}" alt="QR FreeOTP de {{ username }}">
-    <p><small>Valor almacenado en BD:<br><code>{{ db_seed }}</code></small></p>
-    
-    <script>
-        document.getElementById('link-portal').href = `http://${window.location.hostname}:8001`;
-    </script>
+    <p>¿No puedes escanear el QR? Introduce esta clave manualmente: <code id="clave-manual">{{ clave_manual }}</code></p>
+
+    <hr>
+    <h3>Confirmar vinculación</h3>
+    <p>Introduce el código de 6 dígitos generado por tu aplicación para finalizar:</p>
+
+    {% if error %}
+        <p style="color: red;"><strong>{{ error }}</strong></p>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('setup_mfa') }}">
+        <label for="totp">Código FreeOTP (6 dígitos):</label><br>
+        <input type="text" id="totp" name="totp" pattern="[0-9]{6}" maxlength="6" required autocomplete="off" autofocus><br><br>
+        <button type="submit">Confirmar y activar MFA</button>
+    </form>
 </body>
 </html>
-
-

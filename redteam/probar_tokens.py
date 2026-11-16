@@ -40,7 +40,15 @@ comprobar("Caducado hace 100 segundos", api_con({**base, "exp": now - 100}), 401
 
 # 2. Refresh tokens
 print("\n[2] Rotación y reutilización de refresh tokens")
-semilla = re.search(r"[A-Z2-7]{32}", requests.get(f"{AS}/setup-mfa?user=rocio").text).group(0)
+# Enrolamiento MFA legítimo: usuario y contraseña en /enroll-mfa, se lee la clave manual y se confirma con un TOTP
+enrol = requests.Session()
+r = enrol.post(f"{AS}/enroll-mfa", data={"username": "rocio", "password": "SuperSegura2026!"}, allow_redirects=False)
+if r.status_code != 302:
+    raise SystemExit(f"  No se pudo enrolar a rocio (HTTP {r.status_code}). Si ya estaba enrolada, reinicia auth_server.py.")
+pagina = enrol.get(f"{AS}/setup-mfa").text
+semilla = re.search(r'id="clave-manual">([A-Z2-7]{32})<', pagina).group(1)
+r = enrol.post(f"{AS}/setup-mfa", data={"totp": pyotp.TOTP(semilla).now()}, allow_redirects=False)
+comprobar("Enrolamiento MFA de rocio confirmado", r.status_code, 302)
 verifier = secrets.token_urlsafe(48)
 challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
 r = requests.post(
