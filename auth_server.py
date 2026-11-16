@@ -145,8 +145,6 @@ class RefreshTokenGrant(grants.RefreshTokenGrant):
         if not item:
             return None
         if item.used:
-            # Un refresh token ya canjeado vuelve a aparecer, lo tiene alguien más
-            # Se invalida toda la cadena y hay que volver a iniciar sesión
             app.logger.warning("Reutilización de refresh token (usuario %s): cadena revocada", item.user_id)
             revocar_familia(item.family_id)
             return None

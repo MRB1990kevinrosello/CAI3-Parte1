@@ -140,6 +140,7 @@ def callback():
     }
     resp = make_response(redirect("/"))
     resp.set_cookie("sid", sid, httponly=True, secure=COOKIE_SECURE, samesite="Lax")
+    resp.delete_cookie("access_token")   # limpia una cookie heredada del portal antiguo
     return resp
 
 @app.route("/logout")
@@ -157,6 +158,7 @@ def logout():
             pass   # la sesión local se cierra igualmente
     resp = make_response(redirect("/"))
     resp.delete_cookie("sid")
+    resp.delete_cookie("access_token")   # limpia una cookie heredada del portal antiguo
     return resp
 
 @app.before_request
