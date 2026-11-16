@@ -26,6 +26,7 @@ REFRESH_TOKEN_TTL = 8 * 3600  # refresh token: 8 horas como máximo, aunque se r
 
 app = Flask(__name__)
 app.secret_key = os.environ["AUTH_SERVER_SECRET_KEY"]
+app.config["SESSION_COOKIE_NAME"] = "as_session"
 
 with open(os.environ["JWT_PRIVATE_KEY_PATH"], "rb") as f:
     PRIVATE_KEY = JsonWebKey.import_key(f.read(), {"kty": "RSA"})
@@ -46,6 +47,7 @@ MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_DURATION_SECONDS = 5 * 60
 
 LOGIN_ATTEMPTS = {}
+USED_TOTP = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
 def esta_bloqueado(username: str) -> bool:
     now = time.time()
@@ -340,23 +342,32 @@ def setup_mfa():
 
 @app.route("/oauth/authorize", methods=["GET", "POST"])
 def authorize():
-    if not request.values.get("code_challenge") or request.values.get("code_challenge_method") != "S256":
-        return jsonify({"error": "invalid_request", "error_description": "PKCE (code_challenge con S256) es obligatorio"}), 400
-
     if request.method == "GET":
-        return render_template("login.html")
+        csrf_token = secrets.token_hex(32)
+        session["login_csrf"] = csrf_token
+        return render_template("login.html", csrf_token=csrf_token)
+
+    # 1. Validar CSRF
+    expected_csrf = session.pop("login_csrf", None)
+    sent_csrf = request.form.get("csrf_token", "")
+    if not expected_csrf or not secrets.compare_digest(expected_csrf, sent_csrf):
+        app.logger.warning("Fallo de validación CSRF en /oauth/authorize")
+        new_csrf = secrets.token_hex(32)
+        session["login_csrf"] = new_csrf
+        return render_template("login.html", error="Sesión inválida o caducada. Inténtalo de nuevo.", csrf_token=new_csrf), 403
 
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     totp_code = request.form.get("totp", "").strip()
 
+    # 2. Comprobar bloqueo por fuerza bruta
     if esta_bloqueado(username):
-        app.logger.warning(f"Intento de login rechazado (429 - cuenta bloqueada temporalmente) para '{username}'")
-        return render_template(
-            "login.html",
-            error="Demasiados intentos fallidos. Inténtalo de nuevo en unos minutos."
-        ), 429
+        app.logger.warning(f"Intento de login rechazado (429) para '{username}'")
+        new_csrf = secrets.token_hex(32)
+        session["login_csrf"] = new_csrf
+        return render_template("login.html", error="Demasiados intentos fallidos. Inténtalo de nuevo en unos minutos.", csrf_token=new_csrf), 429
 
+    # 3. Verificar usuario y contraseña en tiempo constante
     user = USERS.get(username)
     hash_to_verify = user["password_hash"] if user else DUMMY_HASH
     password_ok = pwd_context.verify(password, hash_to_verify)
@@ -364,12 +375,24 @@ def authorize():
 
     if credentials_ok and not user.get("totp_enrolled"):
         app.logger.warning(f"Login rechazado para '{username}': enrolamiento MFA incompleto")
-        return render_template("login.html", error="Error en el proceso"), 403
+        new_csrf = secrets.token_hex(32)
+        session["login_csrf"] = new_csrf
+        return render_template("login.html", error="Debes completar primero el enrolamiento MFA.", csrf_token=new_csrf), 403
 
+    # 4. Verificar TOTP + Anti-Replay
     totp_ok = False
     if credentials_ok:
         totp = pyotp.TOTP(user["totp_secret"])
-        totp_ok = totp.verify(totp_code, valid_window=1)
+        if totp.verify(totp_code, valid_window=1):
+            now = time.time()
+            with LOGIN_ATTEMPTS_LOCK:
+                last_entry = USED_TOTP.get(username)
+                if last_entry and last_entry[0] == totp_code and (now - last_entry[1]) < 90:
+                    app.logger.warning(f"Intento de replay TOTP bloqueado para '{username}'")
+                    totp_ok = False
+                else:
+                    USED_TOTP[username] = (totp_code, now)
+                    totp_ok = True
 
     if not (credentials_ok and totp_ok):
         registrar_fallo(username)
@@ -378,14 +401,17 @@ def authorize():
         elif not password_ok:
             cause = "contraseña incorrecta"
         else:
-            cause = "código TOTP inválido"
+            cause = "código TOTP inválido o reutilizado"
 
         app.logger.warning(f"Fallo de autenticación en /oauth/authorize para '{username}': {cause}")
-        return render_template("login.html", error="Credenciales o código FreeOTP inválidos"), 401
+        new_csrf = secrets.token_hex(32)
+        session["login_csrf"] = new_csrf
+        return render_template("login.html", error="Credenciales o código FreeOTP inválidos", csrf_token=new_csrf), 401
 
     registrar_exito(username)
     app.logger.info(f"Autenticación exitosa en /oauth/authorize para '{username}'")
     return server.create_authorization_response(grant_user=user)
+
 
 @app.route("/oauth/token", methods=["POST"])
 def issue_token():
@@ -405,5 +431,14 @@ def revoke_token():
 def jwks():
     return jsonify(PUBLIC_JWKS)
 
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Server"] = "Hospital-Auth"
+    return response
+
 if __name__ == "__main__":
-    app.run(port=8000, debug=True)
+    app.run(port=8000, debug=False)
