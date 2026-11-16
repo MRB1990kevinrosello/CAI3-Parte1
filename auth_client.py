@@ -120,4 +120,4 @@ def post_historial():
     })
 
 if __name__ == "__main__":
-    app.run(port=8001, debug=True)
+    app.run(port=8001, debug=False)

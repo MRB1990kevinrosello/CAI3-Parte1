@@ -11,9 +11,7 @@
     {% endif %}
 
     <p style="font-size: 0.9em; color: #555;">
-        Autocompletar perfil de prueba: 
-        <button type="button" onclick="rellenar('rocio', 'SuperSegura2026!')">Rocio (Paciente)</button>
-        <button type="button" onclick="rellenar('dr_gasca', 'MedicoSegura2026!')">Dr. Gasca (Médico)</button>
+
     </p>
 
     <form method="post">
@@ -28,14 +26,5 @@
         
         <button type="submit">Entrar</button>
     </form>
-
-    <script>
-        function rellenar(user, pass) {
-            document.getElementById('username').value = user;
-            document.getElementById('password').value = pass;
-            document.getElementById('totp').value = '';
-            document.getElementById('totp').focus();
-        }
-    </script>
 </body>
 </html>

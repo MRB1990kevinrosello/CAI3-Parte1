@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Enrolamiento MFA - Paso 1</title>
+</head>
+<body>
+    <h2>Configuración de Doble Factor (MFA)</h2>
+    <p>Introduce tus credenciales para vincular tu dispositivo FreeOTP.</p>
+
+    {% if error %}
+        <p style="color: red;"><strong>{{ error }}</strong></p>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('enroll_login') }}">
+        <div>
+            <label for="username">Usuario:</label>
+            <input type="text" id="username" name="username" required autocomplete="off">
+        </div>
+        <br>
+        <div>
+            <label for="password">Contraseña:</label>
+            <input type="password" id="password" name="password" required autocomplete="off">
+        </div>
+        <br>
+        <button type="submit">Continuar al código QR</button>
+    </form>
+</body>
+</html>
