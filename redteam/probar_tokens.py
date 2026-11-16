@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import json
+import os
 import re
 import secrets
 import time
@@ -12,6 +14,8 @@ AS, RS = "http://localhost:8000", "http://localhost:8001"
 CALLBACK = f"{RS}/callback"
 ENV = dotenv_values(".env")
 CLIENT_SECRET = ENV["CLIENT_SECRET"]
+# La semilla solo se puede ver al enrolarse; se guarda para poder repetir el script
+FICHERO_SEMILLA = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".semilla_rocio.json")
 
 
 def comprobar(nombre, obtenido, esperado):
@@ -40,15 +44,24 @@ comprobar("Caducado hace 100 segundos", api_con({**base, "exp": now - 100}), 401
 
 # 2. Refresh tokens
 print("\n[2] Rotación y reutilización de refresh tokens")
-# Enrolamiento MFA legítimo: usuario y contraseña en /enroll-mfa, se lee la clave manual y se confirma con un TOTP
+# Enrolamiento MFA legítimo: usuario y contraseña en /enroll-mfa, se lee la clave manual y se confirma con un TOTP.
+# Si rocio ya está enrolada (segunda ejecución con el mismo servidor) se reutiliza la semilla guardada.
 enrol = requests.Session()
 r = enrol.post(f"{AS}/enroll-mfa", data={"username": "rocio", "password": "SuperSegura2026!"}, allow_redirects=False)
-if r.status_code != 302:
-    raise SystemExit(f"  No se pudo enrolar a rocio (HTTP {r.status_code}). Si ya estaba enrolada, reinicia auth_server.py.")
-pagina = enrol.get(f"{AS}/setup-mfa").text
-semilla = re.search(r'id="clave-manual">([A-Z2-7]{32})<', pagina).group(1)
-r = enrol.post(f"{AS}/setup-mfa", data={"totp": pyotp.TOTP(semilla).now()}, allow_redirects=False)
-comprobar("Enrolamiento MFA de rocio confirmado", r.status_code, 302)
+if r.status_code == 302:
+    pagina = enrol.get(f"{AS}/setup-mfa").text
+    semilla = re.search(r'id="clave-manual">([A-Z2-7]{32})<', pagina).group(1)
+    r = enrol.post(f"{AS}/setup-mfa", data={"totp": pyotp.TOTP(semilla).now()}, allow_redirects=False)
+    comprobar("Enrolamiento MFA de rocio confirmado", r.status_code, 302)
+    with open(FICHERO_SEMILLA, "w", encoding="utf-8") as f:
+        json.dump({"semilla": semilla}, f)
+elif r.status_code == 403 and os.path.exists(FICHERO_SEMILLA):
+    with open(FICHERO_SEMILLA, encoding="utf-8") as f:
+        semilla = json.load(f)["semilla"]
+    print("  rocio ya estaba enrolada: se reutiliza la semilla guardada")
+else:
+    raise SystemExit(f"  No se pudo enrolar a rocio (HTTP {r.status_code}) y no hay semilla guardada. "
+                     "Reinicia auth_server.py y vuelve a ejecutar el script.")
 verifier = secrets.token_urlsafe(48)
 challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
 r = requests.post(
@@ -58,6 +71,12 @@ r = requests.post(
     data={"username": "rocio", "password": "SuperSegura2026!", "totp": pyotp.TOTP(semilla).now()},
     allow_redirects=False,
 )
+if r.status_code != 302:
+    # La semilla guardada es de un arranque anterior del servidor (rocio se ha enrolado de nuevo desde el navegador)
+    if os.path.exists(FICHERO_SEMILLA):
+        os.remove(FICHERO_SEMILLA)
+    raise SystemExit(f"  Login de rocio rechazado (HTTP {r.status_code}): la semilla guardada ya no es válida. "
+                     "Reinicia auth_server.py y vuelve a ejecutar el script.")
 code = re.search(r"code=([^&]+)", r.headers["Location"]).group(1)
 tokens = requests.post(f"{AS}/oauth/token", data={
     "grant_type": "authorization_code", "code": code, "redirect_uri": CALLBACK, "code_verifier": verifier,

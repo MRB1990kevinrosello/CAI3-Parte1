@@ -7,11 +7,12 @@ CAI3-Parte1/
 ├── auth_server.py
 ├── auth_client.py
 ├── generar_claves.py
-├── .env.example
 ├── redteam/
 │   ├── forjar_jwt.py
-│   └── probar_hardening.py
+│   ├── probar_hardening.py
+│   └── probar_tokens.py
 └── templates/
+    ├── enroll_login.html
     ├── setup_mfa.html
     ├── login.html
     └── portal.html
@@ -34,8 +35,7 @@ python generar_claves.py
 
 Crea keys/jwt_private.pem (clave privada RSA con la que se firman los JWT) y el fichero .env
 con secretos aleatorios. Sin este paso los servidores no arrancan. Ni keys/ ni .env se suben
-a git ni se incluyen en el zip: cada instalación genera los suyos. En .env.example está la
-lista de variables con su explicación.
+a git ni se incluyen en el zip: cada instalación genera los suyos.
 
 Paso 2: Arrancar los dos servidores (Necesitas 2 terminales)
 
@@ -46,7 +46,31 @@ b. Terminal 2 — Arrancar el Portal Médico (auth_client.py): python auth_clien
 Paso 3: Acceder al laboratorio
 
 1. Abre tu navegador y entra en la dirección: http://localhost:8001
-2. Haz clic en "Configurar FreeOTP" y escanea el código QR con la aplicación FreeOTP en tu teléfono móvil.
-3. Vuelve al Portal Médico (http://localhost:8001), pulsa "Iniciar sesión con OAuth 2.0 + FreeOTP" e introduce el código de 6 dígitos que genera tu móvil.
+2. Haz clic en "Configurar FreeOTP". Se abre el servidor de identidad y te pide usuario y contraseña
+   (rocio / SuperSegura2026! o dr_gasca / MedicoSegura2026!).
+3. Escanea el código QR con la aplicación FreeOTP de tu móvil (o introduce a mano la clave que aparece
+   debajo) y confirma la vinculación escribiendo el código de 6 dígitos que genera la aplicación.
+   Hasta que no se confirma el enrolamiento, ese usuario no puede iniciar sesión.
+4. Vuelve al Portal Médico (http://localhost:8001), pulsa "Iniciar sesión con OAuth 2.0 + FreeOTP" e introduce
+   usuario, contraseña y el código de 6 dígitos que genera tu móvil.
+
+Notas:
+- Los usuarios y sus semillas TOTP se guardan en memoria: al reiniciar auth_server.py hay que volver a
+  enrolar el MFA (y borrar la cuenta antigua de FreeOTP, porque la semilla cambia). Cada usuario solo se
+  puede enrolar una vez por arranque del servidor.
+- Tras 5 intentos fallidos la cuenta queda bloqueada 5 minutos.
 
 (Importante: No uses 127.0.0.1 en un sitio y localhost en otro, ya que las cookies de sesión OAuth 2.0 pueden fallar por diferencia de dominio).
+
+(Importante: la cookie de sesión del portal lleva la marca Secure. Los navegadores la aceptan por HTTP en
+localhost, pero no si abres el portal desde otra dirección, por ejemplo http://192.168.x.x:8001. En ese caso
+pon COOKIE_SECURE=0 en el .env, o el inicio de sesión volverá siempre a la portada).
+
+Paso 4 (opcional): Scripts de comprobación (con los dos servidores arrancados)
+
+python redteam/probar_hardening.py   -> ataques contra la firma de los JWT
+python redteam/forjar_jwt.py         -> intento de forjar un JWT con la clave antigua
+python redteam/probar_tokens.py      -> claims, rotación de refresh tokens y logout
+
+probar_tokens.py enrola a rocio y guarda su semilla en redteam/.semilla_rocio.json para poder repetirse.
+Si rocio ya estaba enrolada desde el navegador y no hay semilla guardada, reinicia auth_server.py.
